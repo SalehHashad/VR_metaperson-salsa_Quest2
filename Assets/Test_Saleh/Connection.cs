@@ -5,6 +5,8 @@ using NativeWebSocket;
 using TMPro;
 using Crosstales.RTVoice;
 using Crosstales.RTVoice.Model;
+using FrostweepGames.Plugins.GoogleCloud.SpeechRecognition.Examples;
+using System.Threading.Tasks;
 
 public class Connection : MonoBehaviour
 {
@@ -13,12 +15,24 @@ public class Connection : MonoBehaviour
     public TMP_InputField _InputField;
     public TMP_InputField inputFieldAI;
     private GameObject myObject;
-    //public GameObject character;
     private Animator characteranimatior;
-    private string uid; //Unique id of the speech
-    public float letterPause = 0.04f; // Time between each character
+    private string uid;
+    public float letterPause = 0.04f;
     private string message;
     AudioSource audioSource;
+    private Test_2 speechRecognition;
+    private bool isFirstMessage = true;
+    private bool isSpeaking = false;
+    private string currentUid = string.Empty;
+
+    public event Action OnAISpeechComplete;
+    private bool isConnected = false;
+    private bool isProcessingMessage = false;
+    private bool isSending = false;
+    private bool isAudioReady = false;
+
+    public bool IsAISpeaking { get; private set; }
+    public event Action OnAIStartSpeaking;
 
     [Serializable]
     public class MessageData
@@ -36,42 +50,141 @@ public class Connection : MonoBehaviour
         public string web_mob;
     }
 
+    void Awake()
+    {
+        audioSource = GetComponent<AudioSource>();
+        if (audioSource == null)
+        {
+            audioSource = gameObject.AddComponent<AudioSource>();
+        }
+        VerifyAudioSetup();
+    }
+
+    private void VerifyAudioSetup()
+    {
+        if (audioSource == null)
+        {
+            audioSource = gameObject.AddComponent<AudioSource>();
+        }
+
+        audioSource.enabled = true;
+        audioSource.playOnAwake = false;
+        audioSource.spatialBlend = 0f;
+        audioSource.volume = 1f;
+
+        Debug.Log($"Audio Source Status - Enabled: {audioSource.enabled}, Volume: {audioSource.volume}");
+
+        if (Speaker.Instance != null)
+        {
+            Debug.Log($"RT-Voice Status - Speaking: {Speaker.Instance.isSpeaking}");
+        }
+        else
+        {
+            Debug.LogError("RT-Voice Speaker instance is null!");
+        }
+    }
+
     async void Start()
     {
-        //websocket = new WebSocket("ws://69.30.204.3:8765/");
+        Debug.Log($"RT-Voice initialized: {Speaker.Instance != null}");
+        Debug.Log($"AudioSource initialized: {audioSource != null}");
+        //Debug.Log($"Current voice provider: {Speaker.Instance?.CurrentVoiceProvider}");
+
+        if (websocket != null) return;
 
         websocket = new WebSocket("wss://arabtestingai.org");
 
         websocket.OnOpen += () =>
         {
+            isConnected = true;
             Debug.Log("Connection open!");
         };
 
         websocket.OnError += (e) =>
         {
-            textResponse.text += "Error! " + e + "\n";
+            isConnected = false;
+            isSending = false;
+            if (textResponse != null)
+                textResponse.text += "Error! " + e + "\n";
             Debug.Log("Error! " + e);
         };
 
         websocket.OnClose += (e) =>
         {
-            textResponse.text += "Connection closed!! " + e + "\n";
+            isConnected = false;
+            isSending = false;
+            if (textResponse != null)
+                textResponse.text += "Connection closed!! " + e + "\n";
             Debug.Log("Connection closed!");
         };
 
         websocket.OnMessage += (bytes) =>
         {
-             message = System.Text.Encoding.UTF8.GetString(bytes);
-            Debug.Log("Received OnMessage! (" + bytes.Length + " bytes) " + message);
-            //uid = Speaker.Instance.Speak(message, null, Speaker.Instance.VoiceForCulture("en"));
-            SpeakToClip(message);
-          //  text.text += message + "\n";
+            if (bytes != null && bytes.Length > 0)
+            {
+                string receivedMessage = System.Text.Encoding.UTF8.GetString(bytes);
+                Debug.Log($"Received OnMessage! ({bytes.Length} bytes) {receivedMessage}");
 
+                if (isFirstMessage)
+                {
+                    isFirstMessage = false;
+                    isProcessingMessage = false;
+                    isSending = false;
+                    SendWebSocketMessageAsync(_InputField.text);
+                    return;
+                }
+
+                if (!isProcessingMessage && !string.IsNullOrEmpty(receivedMessage))
+                {
+                    isProcessingMessage = true;
+                    isSending = false;
+                    message = receivedMessage;
+
+                    if (!isAudioReady)
+                    {
+                        if (audioSource != null)
+                        {
+                            audioSource.enabled = true;
+                            isAudioReady = true;
+                            Debug.Log("Audio source enabled in OnMessage");
+                        }
+                    }
+
+                    SpeakToClip(receivedMessage);
+                }
+            }
         };
 
-        InvokeRepeating("SendWebSocketMessage", 0.0f, 0.3f);
-        await websocket.Connect();
+        speechRecognition = FindObjectOfType<Test_2>();
+        if (speechRecognition != null)
+        {
+            speechRecognition.OnSpeechRecognized += HandleNewSpeechRecognized;
+        }
+        else
+        {
+            Debug.LogError("Speech Recognition script not found!");
+        }
+
+        try
+        {
+            await websocket.Connect();
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"WebSocket connection failed: {e.Message}");
+            isConnected = false;
+            isSending = false;
+        }
     }
+
+    private async void HandleNewSpeechRecognized(string text)
+    {
+        if (!isSending)
+        {
+            await StartSendTestAsync();
+        }
+    }
+
     IEnumerator TypeText(string message)
     {
         foreach (char letter in message.ToCharArray())
@@ -80,54 +193,83 @@ public class Connection : MonoBehaviour
             yield return new WaitForSeconds(letterPause);
         }
     }
+
     public void SpeakToClip(string message)
     {
-
-        audioSource = GetComponent<AudioSource>();
-        audioSource.enabled = false;
-
-        // Use SpeakNative to output directly to an AudioSource
-        Speaker.Instance.Speak(message, audioSource, Speaker.Instance.VoiceForCulture("en"), false);
-
-        // Now audioSource.clip should contain the generated AudioClip after speaking
-        StartCoroutine(WaitForAudioClip(audioSource));
-    }
-
-    private System.Collections.IEnumerator WaitForAudioClip(AudioSource audioSource)
-    {
-        // Wait until the audio source has finished playing
-        while (audioSource.isPlaying)
+        if (audioSource == null)
         {
-            yield return null;
+            Debug.LogError("AudioSource is null in SpeakToClip");
+            return;
         }
 
-        // At this point, the AudioClip should be available
-        AudioClip generatedClip = audioSource.clip;
-        Debug.Log("Speech complete. AudioClip generated.");
+        audioSource.enabled = true;
+        audioSource.playOnAwake = false;
+        this.message = message;
 
-        // You can now use the generatedClip as needed
-        // For example, save it, process it, etc.
+        currentUid = System.Guid.NewGuid().ToString();
+        uid = currentUid;
+
+        Debug.Log("Starting to speak message: " + message);
+        IsAISpeaking = true;
+        OnAIStartSpeaking?.Invoke(); 
+        Speaker.Instance.Speak(message, audioSource, Speaker.Instance.VoiceForCulture("en"), true);
+
+        StartCoroutine(MonitorSpeech());
+    }
+
+    private IEnumerator MonitorSpeech()
+    {
+        isSpeaking = true;
+
+        yield return new WaitForSeconds(0.2f);
+
+        //while (Speaker.Instance.isSpeaking)
+        //{
+        //    Debug.Log("Currently speaking...");
+        //    yield return new WaitForSeconds(0.1f);
+        //}
+        while (audioSource.isPlaying)
+        {
+            yield return new WaitForSeconds(audioSource.clip.length);
+
+        }
+
+        yield return new WaitForSeconds(0.2f);
+
+        Debug.Log("Speech completed");
+        isSpeaking = false;
+        IsAISpeaking = false;  
+        isProcessingMessage = false;
+        yield return new WaitForSeconds(audioSource.clip.length);
+        OnAISpeechComplete?.Invoke();
     }
 
     public void StartSpeek()
     {
-        audioSource.enabled = true;
+        if (audioSource != null)
+        {
+            audioSource.enabled = true;
+            Debug.Log("Audio source enabled");
+        }
+        else
+        {
+            Debug.LogError("AudioSource is null in StartSpeek");
+        }
     }
+
     void Update()
     {
         if (myObject == null)
         {
             myObject = GameObject.Find("Contenttxt");
-            //character = GameObject.Find("gcharacter");
             if (myObject == null)
             {
-                Debug.LogWarning("Object with name 'ObjectName' not found!");
+                Debug.LogWarning("Object with name 'Contenttxt' not found!");
             }
             else
             {
                 textResponse = myObject.GetComponent<TextMeshProUGUI>();
-                //characteranimatior = character.GetComponent<Animator>();
-                Debug.Log("Object with name 'ObjectName' found!");
+                Debug.Log("Object found!");
             }
         }
 
@@ -135,85 +277,72 @@ public class Connection : MonoBehaviour
         websocket.DispatchMessageQueue();
 #endif
     }
+
     private void OnEnable()
     {
-        Speaker.Instance.OnSpeakStart += speakStart;
-        Speaker.Instance.OnSpeakComplete += speakComplete;
+        Speaker.Instance.OnSpeakStart += HandleSpeakStart;
+        Speaker.Instance.OnSpeakComplete += HandleSpeakComplete;
     }
-    async void SendWebSocketMessage()
-    {
-        //Debug.Log("callllllllllled");
-        if (websocket.State == WebSocketState.Open)
-        {
-            MessageData messageData = new MessageData
-            {
-                prompt = "A professor going to work first walks 500 m along the campus wall, then enters the campus and goes 100 m perpendicularly to the wall towards his building, after that takes an elevator and mounts 10 m up to his office. The trip takes 10 minutes. Calculate the displacement, the distance between the initial and final points, the average velocity and the average speed.",
-                targetLang = "en",
-                classification = 24,
-                store_type = PlayerPrefs.GetString("subject"),
-                prompt_template = PlayerPrefs.GetString("level"),
-                system_prompt = "adhd_app_sentence_chunks_emb",
-                exams = PlayerPrefs.GetInt("Academicyear"),
-                general_knowledge_base = "yes",
-                data = "",
-                file_name = "",
-                web_mob = "\n"
-            };
 
-            string jsonString = JsonUtility.ToJson(messageData);
-            await websocket.SendText(jsonString);
-            CancelInvoke("SendWebSocketMessage");
+    private void OnDisable()
+    {
+        Speaker.Instance.OnSpeakStart -= HandleSpeakStart;
+        Speaker.Instance.OnSpeakComplete -= HandleSpeakComplete;
+    }
+
+    private void OnDestroy()
+    {
+        if (speechRecognition != null)
+        {
+            speechRecognition.OnSpeechRecognized -= HandleNewSpeechRecognized;
         }
     }
 
-    public void CallSendWebSocketMessage(TextMeshProUGUI promptvalue)
+    private void HandleSpeakStart(Wrapper wrapper)
     {
-        string textval = promptvalue.text;
-        if (string.IsNullOrEmpty(textval))
+        if (wrapper.Uid == currentUid)
         {
-            Debug.Log("Input field is null or empty.");
-        }
-        else
-        {
-            SendWebSocketMessage(textval);
-        }
-        
-    }
-    private void speakStart(Wrapper wrapper)
-    {
-        if (wrapper.Uid == uid) //Only write the log message if it's "our" speech
-        {
-            Debug.Log($"RT-Voice: speak started: {wrapper}");
-          // characteranimatior.Play("_Talk_F");
+            Debug.Log($"Speech started: {wrapper.Text}");
             StopAllCoroutines();
             StartCoroutine(TypeText(message));
         }
     }
 
-    private void speakComplete(Wrapper wrapper)
+    private void HandleSpeakComplete(Wrapper wrapper)
     {
-        if (wrapper.Uid == uid) //Only write the log message if it's "our" speech
+        if (wrapper.Uid == currentUid)
         {
-            Debug.Log($"RT-Voice: speak completed: {wrapper}");
-            //characteranimatior.Play("idel");
+            Debug.Log($"Speech completed: {wrapper.Text}");
+            isProcessingMessage = false;
+        }
+    }
+
+    private async Task StartSendTestAsync()
+    {
+        if (!string.IsNullOrEmpty(_InputField.text))
+        {
+            await SendWebSocketMessageAsync(_InputField.text);
         }
     }
 
     public void StartSendTest()
     {
-        SendWebSocketMessage(_InputField.text);
-    }
-    public void StartSendTestAI( )
-    {
-        SendWebSocketMessage(inputFieldAI.text);
+        SendWebSocketMessageAsync(_InputField.text);
     }
 
-    async void SendWebSocketMessage(string textval)
+    private async Task SendWebSocketMessageAsync(string textval)
     {
         textResponse.text = "";
         Debug.Log("call SendWebSocketMessage");
         if (websocket.State == WebSocketState.Open)
         {
+            if (audioSource != null)
+            {
+                audioSource.enabled = true;
+                isAudioReady = true;
+                Debug.Log("Audio source enabled before sending message");
+            }
+
             MessageData messageData = new MessageData
             {
                 prompt = textval,
@@ -237,6 +366,10 @@ public class Connection : MonoBehaviour
 
     private async void OnApplicationQuit()
     {
-        await websocket.Close();
+        isConnected = false;
+        if (websocket != null)
+        {
+            await websocket.Close();
+        }
     }
 }

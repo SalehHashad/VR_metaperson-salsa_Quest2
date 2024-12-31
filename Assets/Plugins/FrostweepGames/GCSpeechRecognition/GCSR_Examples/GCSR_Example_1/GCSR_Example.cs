@@ -34,7 +34,8 @@ namespace FrostweepGames.Plugins.GoogleCloud.SpeechRecognition.Examples
 
 		private Image _voiceLevelImage;
 		public TMP_InputField _InputFieldresult;
-		public Button askai;
+		//public TMP_InputField _InputFieldresult;
+        public Button askai;
 		private void Start()
 		{
 			_speechRecognition = GCSpeechRecognition.Instance;
@@ -402,7 +403,7 @@ namespace FrostweepGames.Plugins.GoogleCloud.SpeechRecognition.Examples
 
 			_resultText.text += "\n" + recognitionResponse.results[0].alternatives[0].transcript;
 			_InputFieldresult.text = recognitionResponse.results[0].alternatives[0].transcript;
-			askai.interactable = true;
+			//askai.interactable = true;
 			var words = recognitionResponse.results[0].alternatives[0].words;
 
 			if (words != null)
