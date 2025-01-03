@@ -40,24 +40,37 @@ public class TherapistClient
 
     public async Task SendMessage(string message)
     {
-        if (websocket.State != WebSocketState.Open)
+        try
         {
-            await Connect();
+            if (websocket.State != WebSocketState.Open)
+            {
+                Debug.Log("WebSocket not open, attempting to reconnect...");
+                await Connect();
+            }
+
+            string messageJson = JsonConvert.SerializeObject(new { content = message });
+            byte[] messageBytes = Encoding.UTF8.GetBytes(messageJson);
+            await websocket.SendAsync(new ArraySegment<byte>(messageBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+
+            Debug.Log($"\n[{name}]: {message}");
+            conversationHistory.Add(("user", message));
+
+            string response = await ReceiveMessage();
+            var responseData = JsonConvert.DeserializeObject<Dictionary<string, string>>(response);
+
+            Debug.Log($"Therapist: {responseData["content"]}");
+            conversationHistory.Add(("therapist", responseData["content"]));
         }
-
-        string messageJson = JsonConvert.SerializeObject(new { content = message });
-
-        byte[] messageBytes = Encoding.UTF8.GetBytes(messageJson);
-        await websocket.SendAsync(new ArraySegment<byte>(messageBytes), WebSocketMessageType.Text, true, CancellationToken.None);
-
-        Debug.Log($"\n[{name}]: {message}");
-        conversationHistory.Add(("user", message));
-
-        string response = await ReceiveMessage();
-        var responseData = JsonConvert.DeserializeObject<Dictionary<string, string>>(response);
-
-        Debug.Log($"Therapist: {responseData["content"]}");
-        conversationHistory.Add(("therapist", responseData["content"]));
+        catch (WebSocketException wsEx)
+        {
+            Debug.LogError($"WebSocket error: {wsEx.Message}");
+            throw;  
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Error in SendMessage: {e.Message}");
+            throw;
+        }
     }
 
     public async Task Close()
@@ -68,11 +81,31 @@ public class TherapistClient
             Debug.Log($"\n[{name}] Disconnected");
         }
     }
+    public string GetLastResponse()
+    {
+        var lastTherapistMessage = conversationHistory
+            .FindLast(msg => msg.sender == "therapist");
 
+        return lastTherapistMessage.content;
+    }
     private async Task<string> ReceiveMessage()
     {
-        var buffer = new byte[1024];
-        var result = await websocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
-        return Encoding.UTF8.GetString(buffer, 0, result.Count);
+        try
+        {
+            var buffer = new byte[8192]; 
+            var result = await websocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                throw new WebSocketException("Server initiated close");
+            }
+
+            return Encoding.UTF8.GetString(buffer, 0, result.Count);
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Error receiving message: {e.Message}");
+            throw;
+        }
     }
 }

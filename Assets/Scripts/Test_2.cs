@@ -15,7 +15,8 @@ namespace FrostweepGames.Plugins.GoogleCloud.SpeechRecognition.Examples
         public Text _resultText;
         public TMP_InputField _InputFieldresult;
         public Image _voiceLevelImage;
-        private Connection connectionManager;
+        //private Connection connectionManager;
+        public GendyTestWebSocket connectionManager;
         public bool canRecord = true;
         private float silenceTimer = 0f;
 
@@ -30,7 +31,7 @@ namespace FrostweepGames.Plugins.GoogleCloud.SpeechRecognition.Examples
         {
             InitializeSpeechRecognition();
 
-            connectionManager = FindObjectOfType<Connection>();
+            connectionManager = FindObjectOfType<GendyTestWebSocket>();
             if (connectionManager == null)
             {
                 Debug.LogError("Connection script not found in scene!");

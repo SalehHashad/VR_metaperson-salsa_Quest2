@@ -1,21 +1,23 @@
 using System;
 using System.Collections;
 using UnityEngine;
-using NativeWebSocket;
 using TMPro;
 using Crosstales.RTVoice;
 using Crosstales.RTVoice.Model;
 using FrostweepGames.Plugins.GoogleCloud.SpeechRecognition.Examples;
 using System.Threading.Tasks;
+using System.Text.Json;
 
-public class Connection : MonoBehaviour
+public class GendyTestWebSocket : MonoBehaviour
 {
-    WebSocket websocket;
+    private int maxReconnectAttempts = 3;
+    private float reconnectDelay = 2f;
+
+    private TherapistClient therapistClient;
     public TextMeshProUGUI textResponse;
     public TMP_InputField _InputField;
     public TMP_InputField inputFieldAI;
     private GameObject myObject;
-    private Animator characteranimatior;
     private string uid;
     public float letterPause = 0.04f;
     private string message;
@@ -58,6 +60,10 @@ public class Connection : MonoBehaviour
             audioSource = gameObject.AddComponent<AudioSource>();
         }
         VerifyAudioSetup();
+
+        int userId = PlayerPrefs.GetInt("UserID", 1);
+        string userName = PlayerPrefs.GetString("UserName", "User");
+        therapistClient = new TherapistClient(userId, userName);
     }
 
     private void VerifyAudioSetup()
@@ -88,73 +94,17 @@ public class Connection : MonoBehaviour
     {
         Debug.Log($"RT-Voice initialized: {Speaker.Instance != null}");
         Debug.Log($"AudioSource initialized: {audioSource != null}");
-        //Debug.Log($"Current voice provider: {Speaker.Instance?.CurrentVoiceProvider}");
 
-        if (websocket != null) return;
-
-        //websocket = new WebSocket("wss://arabtestingai.org");
-        websocket = new WebSocket("wss://arabtestingai.org");
-
-        websocket.OnOpen += () =>
+        try
         {
-            isConnected = true;
-            Debug.Log("Connection open!");
-        };
-
-        websocket.OnError += (e) =>
+            await ConnectToServer();
+        }
+        catch (Exception e)
         {
+            Debug.LogError($"Connection failed: {e.Message}");
             isConnected = false;
             isSending = false;
-            if (textResponse != null)
-                textResponse.text += "Error! " + e + "\n";
-            Debug.Log("Error! " + e);
-        };
-
-        websocket.OnClose += (e) =>
-        {
-            isConnected = false;
-            isSending = false;
-            if (textResponse != null)
-                textResponse.text += "Connection closed!! " + e + "\n";
-            Debug.Log("Connection closed!");
-        };
-
-        websocket.OnMessage += (bytes) =>
-        {
-            if (bytes != null && bytes.Length > 0)
-            {
-                string receivedMessage = System.Text.Encoding.UTF8.GetString(bytes);
-                Debug.Log($"Received OnMessage! ({bytes.Length} bytes) {receivedMessage}");
-
-                if (isFirstMessage)
-                {
-                    isFirstMessage = false;
-                    isProcessingMessage = false;
-                    isSending = false;
-                    SendWebSocketMessageAsync(_InputField.text);
-                    return;
-                }
-
-                if (!isProcessingMessage && !string.IsNullOrEmpty(receivedMessage))
-                {
-                    isProcessingMessage = true;
-                    isSending = false;
-                    message = receivedMessage;
-
-                    if (!isAudioReady)
-                    {
-                        if (audioSource != null)
-                        {
-                            audioSource.enabled = true;
-                            isAudioReady = true;
-                            Debug.Log("Audio source enabled in OnMessage");
-                        }
-                    }
-
-                    SpeakToClip(receivedMessage);
-                }
-            }
-        };
+        }
 
         speechRecognition = FindObjectOfType<Test_2>();
         if (speechRecognition != null)
@@ -165,18 +115,54 @@ public class Connection : MonoBehaviour
         {
             Debug.LogError("Speech Recognition script not found!");
         }
+    }
 
+    private async Task ConnectToServer()
+    {
         try
         {
-            await websocket.Connect();
+            await therapistClient.Connect();
+            isConnected = true;
+            Debug.Log("Connection established successfully!");
         }
         catch (Exception e)
         {
-            Debug.LogError($"WebSocket connection failed: {e.Message}");
-            isConnected = false;
-            isSending = false;
+            Debug.LogError($"Failed to connect: {e.Message}");
+            throw;
         }
     }
+    private async Task<bool> TryReconnect()
+    {
+        for (int attempt = 1; attempt <= maxReconnectAttempts; attempt++)
+        {
+            Debug.Log($"Reconnection attempt {attempt} of {maxReconnectAttempts}");
+            try
+            {
+                isConnected = false;
+
+                await Task.Delay(TimeSpan.FromSeconds(reconnectDelay));
+
+                int userId = PlayerPrefs.GetInt("UserID", 1);
+                string userName = PlayerPrefs.GetString("UserName", "User");
+                therapistClient = new TherapistClient(userId, userName);
+
+                await ConnectToServer();
+
+                Debug.Log("Reconnection successful!");
+                isConnected = true;
+                return true;
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"Reconnection attempt {attempt} failed: {e.Message}");
+            }
+        }
+
+        Debug.LogError("Failed to reconnect after multiple attempts");
+        return false;
+    }
+
+
 
     private async void HandleNewSpeechRecognized(string text)
     {
@@ -197,14 +183,39 @@ public class Connection : MonoBehaviour
 
     public void SpeakToClip(string message)
     {
-        if (audioSource == null)
+        if (string.IsNullOrEmpty(message))
         {
-            Debug.LogError("AudioSource is null in SpeakToClip");
+            Debug.LogError("Attempted to speak empty message");
             return;
         }
 
+        if (audioSource == null)
+        {
+            Debug.LogError("AudioSource is null in SpeakToClip");
+            audioSource = gameObject.AddComponent<AudioSource>();
+            if (audioSource == null)
+            {
+                Debug.LogError("Failed to create AudioSource");
+                return;
+            }
+        }
+
+        if (Speaker.Instance == null)
+        {
+            Debug.LogError("RT-Voice Speaker instance is null!");
+            return;
+        }
+
+        Debug.Log($"Audio Source Status - Enabled: {audioSource.enabled}, Volume: {audioSource.volume}");
+        Debug.Log($"RT-Voice Status - Speaking: {Speaker.Instance.isSpeaking}");
+        Debug.Log($"Attempting to speak message: '{message}'");
+
+        // Configure audio source
         audioSource.enabled = true;
         audioSource.playOnAwake = false;
+        audioSource.spatialBlend = 0f; // 2D sound
+        audioSource.volume = 1f;
+
         this.message = message;
 
         currentUid = System.Guid.NewGuid().ToString();
@@ -212,8 +223,29 @@ public class Connection : MonoBehaviour
 
         Debug.Log("Starting to speak message: " + message);
         IsAISpeaking = true;
-        OnAIStartSpeaking?.Invoke(); 
-        Speaker.Instance.Speak(message, audioSource, Speaker.Instance.VoiceForCulture("en"), true);
+        OnAIStartSpeaking?.Invoke();
+
+        try
+        {
+            // Get the voice before speaking
+            var voice = Speaker.Instance.VoiceForCulture("en");
+            if (voice == null)
+            {
+                Debug.LogError("No English voice found!");
+                return;
+            }
+
+            // Speak with the selected voice
+            Speaker.Instance.Speak(message, audioSource, voice, true);
+            Debug.Log("Speak command sent successfully");
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Error in Speak command: {e.Message}");
+            IsAISpeaking = false;
+            isProcessingMessage = false;
+            return;
+        }
 
         StartCoroutine(MonitorSpeech());
     }
@@ -221,62 +253,62 @@ public class Connection : MonoBehaviour
     private IEnumerator MonitorSpeech()
     {
         isSpeaking = true;
-
         yield return new WaitForSeconds(0.2f);
 
-        //while (Speaker.Instance.isSpeaking)
-        //{
-        //    Debug.Log("Currently speaking...");
-        //    yield return new WaitForSeconds(0.1f);
-        //}
+        // Check if audioSource exists
+        if (audioSource == null)
+        {
+            Debug.LogError("AudioSource is null in MonitorSpeech");
+            yield break;
+        }
+
+        // Wait until we have a clip
+        float maxWaitTime = 5f; // Maximum time to wait for clip
+        float waitedTime = 0f;
+
+        while (audioSource.clip == null && waitedTime < maxWaitTime)
+        {
+            waitedTime += 0.1f;
+            yield return new WaitForSeconds(0.1f);
+        }
+
+        if (audioSource.clip == null)
+        {
+            Debug.LogError("No audio clip was created");
+            isSpeaking = false;
+            IsAISpeaking = false;
+            isProcessingMessage = false;
+            OnAISpeechComplete?.Invoke();
+            yield break;
+        }
+
+        // Now we can safely monitor the audio playback
         while (audioSource.isPlaying)
         {
-            yield return new WaitForSeconds(audioSource.clip.length);
-
+            yield return new WaitForSeconds(0.1f); // Check more frequently
         }
 
         yield return new WaitForSeconds(0.2f);
 
         Debug.Log("Speech completed");
         isSpeaking = false;
-        IsAISpeaking = false;  
+        IsAISpeaking = false;
         isProcessingMessage = false;
-        yield return new WaitForSeconds(audioSource.clip.length);
         OnAISpeechComplete?.Invoke();
     }
 
-    public void StartSpeek()
-    {
-        if (audioSource != null)
-        {
-            audioSource.enabled = true;
-            Debug.Log("Audio source enabled");
-        }
-        else
-        {
-            Debug.LogError("AudioSource is null in StartSpeek");
-        }
-    }
 
     void Update()
     {
         if (myObject == null)
         {
             myObject = GameObject.Find("Contenttxt");
-            if (myObject == null)
-            {
-                Debug.LogWarning("Object with name 'Contenttxt' not found!");
-            }
-            else
+            if (myObject != null)
             {
                 textResponse = myObject.GetComponent<TextMeshProUGUI>();
                 Debug.Log("Object found!");
             }
         }
-
-#if !UNITY_WEBGL || UNITY_EDITOR
-        websocket.DispatchMessageQueue();
-#endif
     }
 
     private void OnEnable()
@@ -296,6 +328,11 @@ public class Connection : MonoBehaviour
         if (speechRecognition != null)
         {
             speechRecognition.OnSpeechRecognized -= HandleNewSpeechRecognized;
+        }
+
+        if (therapistClient != null)
+        {
+            _ = therapistClient.Close();
         }
     }
 
@@ -328,21 +365,25 @@ public class Connection : MonoBehaviour
 
     public void StartSendTest()
     {
-        SendWebSocketMessageAsync(_InputField.text);
+        _ = SendWebSocketMessageAsync(_InputField.text);
     }
 
     private async Task SendWebSocketMessageAsync(string textval)
     {
-        textResponse.text = "";
-        Debug.Log("call SendWebSocketMessage");
-        if (websocket.State == WebSocketState.Open)
+        try
         {
-            if (audioSource != null)
+            if (!isConnected)
             {
-                audioSource.enabled = true;
-                isAudioReady = true;
-                Debug.Log("Audio source enabled before sending message");
+                Debug.LogWarning("Not connected to server. Attempting to reconnect...");
+                bool reconnected = await TryReconnect();
+                if (!reconnected)
+                {
+                    throw new Exception("Failed to reconnect to server");
+                }
             }
+
+            textResponse.text = "";
+            Debug.Log("Sending message to server");
 
             MessageData messageData = new MessageData
             {
@@ -360,17 +401,53 @@ public class Connection : MonoBehaviour
             };
 
             string jsonString = JsonUtility.ToJson(messageData);
-            await websocket.SendText(jsonString);
-            CancelInvoke("SendWebSocketMessage");
+            await therapistClient.SendMessage(jsonString);
+
+            var lastMessage = await GetLastTherapistMessage();
+            if (!string.IsNullOrEmpty(lastMessage))
+            {
+                Debug.Log($"Received therapist response: {lastMessage}");
+                if (!isProcessingMessage)
+                {
+                    isProcessingMessage = true;
+                    message = lastMessage;
+                    SpeakToClip(lastMessage);
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Error sending message: {e.Message}");
+            isConnected = false;
+            isSending = false;
+
+            bool reconnected = await TryReconnect();
+            if (reconnected)
+            {
+                await SendWebSocketMessageAsync(textval);
+            }
+        }
+    }
+
+    private async Task<string> GetLastTherapistMessage()
+    {
+        try
+        {
+            return await Task.FromResult(therapistClient.GetLastResponse());
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Error getting last message: {e.Message}");
+            return null;
         }
     }
 
     private async void OnApplicationQuit()
     {
-        isConnected = false;
-        if (websocket != null)
+        if (therapistClient != null)
         {
-            await websocket.Close();
+            await therapistClient.Close();
         }
+        isConnected = false;
     }
 }
