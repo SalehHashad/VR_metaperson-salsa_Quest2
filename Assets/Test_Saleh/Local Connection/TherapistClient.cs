@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Net.WebSockets;
 using System.Text;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -21,7 +20,7 @@ public class TherapistClient
     {
         this.userId = userId;
         this.name = name;
-        this.uri = new Uri($"ws://69.30.204.3:8765/{userId}");
+        this.uri = new Uri($"wss://arabtestingai.org:8765/1{userId}");
         this.websocket = new ClientWebSocket();
         this.conversationHistory = new List<(string sender, string content)>();
     }

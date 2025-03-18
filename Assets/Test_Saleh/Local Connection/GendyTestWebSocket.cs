@@ -6,7 +6,7 @@ using Crosstales.RTVoice;
 using Crosstales.RTVoice.Model;
 using FrostweepGames.Plugins.GoogleCloud.SpeechRecognition.Examples;
 using System.Threading.Tasks;
-using System.Text.Json;
+// using System.Text.Json;
 
 public class GendyTestWebSocket : MonoBehaviour
 {

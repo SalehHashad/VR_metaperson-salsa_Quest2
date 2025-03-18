@@ -29,6 +29,7 @@ namespace FrostweepGames.Plugins.GoogleCloud.SpeechRecognition.Examples
 
         private void Start()
         {
+
             InitializeSpeechRecognition();
 
             connectionManager = FindObjectOfType<GendyTestWebSocket>();
@@ -129,9 +130,12 @@ namespace FrostweepGames.Plugins.GoogleCloud.SpeechRecognition.Examples
 
         private void SetupDefaultMicrophone()
         {
+
             var devices = _speechRecognition.GetMicrophoneDevices();
             if (devices.Length > 0)
             {
+                Debug.Log(devices[0]);
+
                 _speechRecognition.SetMicrophoneDevice(devices[0]);
             }
         }
